@@ -16,11 +16,11 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ================ CONFIGURAZIONE ====================
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://ofijopixtpwahgbwyutc.supabase.co")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 # Database per le chiavi Browserless
-BROWSERLESS_SUPABASE_URL = os.environ.get("BROWSERLESS_SUPABASE_URL", "https://lmtmjfrhzbjtayjwcpsq.supabase.co")
+BROWSERLESS_SUPABASE_URL = os.environ.get("BROWSERLESS_SUPABASE_URL")
 BROWSERLESS_SUPABASE_KEY = os.environ.get("BROWSERLESS_SUPABASE_KEY")
 
 # Credenziali account EasyHits4U
@@ -36,6 +36,26 @@ ERRORI_DIR = "errori"
 DATASET_REPO = "zenadazurli/easyhits4u-dataset"
 
 os.makedirs(ERRORI_DIR, exist_ok=True)
+
+# ================ VERIFICA VARIABILI ====================
+print("=" * 50, flush=True)
+print("🚀 ALL-IN-ONE: Generatore + Autosurf", flush=True)
+print(f"📧 Account: {EASYHITS_EMAIL}", flush=True)
+print("=" * 50, flush=True)
+
+# Verifica variabili critiche
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("❌ ERRORE: SUPABASE_URL o SUPABASE_KEY non impostate!", flush=True)
+    print("   Imposta le variabili d'ambiente su Render", flush=True)
+    sys.exit(1)
+
+if not BROWSERLESS_SUPABASE_URL or not BROWSERLESS_SUPABASE_KEY:
+    print("❌ ERRORE: BROWSERLESS_SUPABASE_URL o BROWSERLESS_SUPABASE_KEY non impostate!", flush=True)
+    sys.exit(1)
+
+print(f"✅ SUPABASE_URL: {SUPABASE_URL[:30]}...", flush=True)
+print(f"✅ BROWSERLESS_SUPABASE_URL: {BROWSERLESS_SUPABASE_URL[:30]}...", flush=True)
+print("=" * 50, flush=True)
 
 # ================ GLOBALS ====================
 X_fast = None
@@ -96,19 +116,23 @@ def load_dataset_from_hf():
 
 # ================ GESTIONE CHIAVI BROWSERLESS ====================
 def get_working_keys():
-    supabase = create_client(BROWSERLESS_SUPABASE_URL, BROWSERLESS_SUPABASE_KEY)
-    resp = supabase.table('browserless_keys')\
-        .select('api_key')\
-        .eq('status', 'working')\
-        .execute()
-    
-    keys = []
-    for row in resp.data:
-        clean_key = row['api_key'].strip()
-        keys.append(clean_key)
-    
-    log(f"📋 Trovate {len(keys)} chiavi Browserless 'working'")
-    return keys
+    try:
+        supabase = create_client(BROWSERLESS_SUPABASE_URL, BROWSERLESS_SUPABASE_KEY)
+        resp = supabase.table('browserless_keys')\
+            .select('api_key')\
+            .eq('status', 'working')\
+            .execute()
+        
+        keys = []
+        for row in resp.data:
+            clean_key = row['api_key'].strip()
+            keys.append(clean_key)
+        
+        log(f"📋 Trovate {len(keys)} chiavi Browserless 'working'")
+        return keys
+    except Exception as e:
+        log(f"❌ Errore lettura chiavi: {e}")
+        return []
 
 def get_cf_token(api_key):
     query = """
@@ -166,13 +190,16 @@ def generate_cookie():
         }
         
         try:
+            # GET homepage
             session.get("https://www.easyhits4u.com/", headers=headers, verify=False, timeout=15)
             time.sleep(1)
             
+            # Token Cloudflare
             token = get_cf_token(api_key)
             if not token:
                 continue
             
+            # POST login
             login_headers = headers.copy()
             login_headers['Content-Type'] = 'application/x-www-form-urlencoded'
             login_headers['Referer'] = REFERER_URL
@@ -191,10 +218,16 @@ def generate_cookie():
                 continue
             
             time.sleep(2)
+            
+            # GET /member/
             session.get("https://www.easyhits4u.com/member/", headers=headers, verify=False, timeout=15)
             time.sleep(1)
+            
+            # GET /surf/
             session.get("https://www.easyhits4u.com/surf/", headers=headers, verify=False, timeout=15)
             time.sleep(1)
+            
+            # GET referer
             session.get(REFERER_URL, headers=headers, verify=False, timeout=15)
             
             cookies = session.cookies.get_dict()
@@ -204,27 +237,34 @@ def generate_cookie():
                 log(f"✅ Cookie generato! user_id={cookies['user_id']}, sesids={cookies['sesids']}")
                 
                 # Salva su Supabase
-                supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-                existing = supabase.table('account_cookies').select('id').eq('account_name', ACCOUNT_NAME).execute()
+                try:
+                    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+                    
+                    # Verifica se esiste già
+                    existing = supabase.table('account_cookies').select('id').eq('account_name', ACCOUNT_NAME).execute()
+                    
+                    cookie_data = {
+                        'account_name': ACCOUNT_NAME,
+                        'email': EASYHITS_EMAIL,
+                        'password': EASYHITS_PASSWORD,
+                        'cookies_string': cookie_string,
+                        'user_id': cookies['user_id'],
+                        'sesid': cookies['sesids'],
+                        'status': 'active',
+                        'updated_at': datetime.now().isoformat()
+                    }
+                    
+                    if existing.data:
+                        supabase.table('account_cookies').update(cookie_data).eq('account_name', ACCOUNT_NAME).execute()
+                        log("💾 Cookie aggiornato su Supabase")
+                    else:
+                        cookie_data['created_at'] = datetime.now().isoformat()
+                        supabase.table('account_cookies').insert(cookie_data).execute()
+                        log("💾 Cookie salvato su Supabase")
+                    
+                except Exception as e:
+                    log(f"⚠️ Errore salvataggio Supabase: {e}")
                 
-                cookie_data = {
-                    'account_name': ACCOUNT_NAME,
-                    'email': EASYHITS_EMAIL,
-                    'password': EASYHITS_PASSWORD,
-                    'cookies_string': cookie_string,
-                    'user_id': cookies['user_id'],
-                    'sesid': cookies['sesids'],
-                    'status': 'active',
-                    'updated_at': datetime.now().isoformat()
-                }
-                
-                if existing.data:
-                    supabase.table('account_cookies').update(cookie_data).eq('account_name', ACCOUNT_NAME).execute()
-                else:
-                    cookie_data['created_at'] = datetime.now().isoformat()
-                    supabase.table('account_cookies').insert(cookie_data).execute()
-                
-                log("💾 Cookie salvato su Supabase")
                 return cookie_string
                 
         except Exception as e:
@@ -239,12 +279,13 @@ def get_cookie_from_supabase():
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
         resp = supabase.table('account_cookies')\
-            .select('cookies_string', 'user_id', 'sesid')\
+            .select('cookies_string')\
             .eq('account_name', ACCOUNT_NAME)\
             .eq('status', 'active')\
             .execute()
         
         if resp.data:
+            log("✅ Cookie trovato su Supabase")
             return resp.data[0]['cookies_string']
         return None
     except Exception as e:
@@ -363,11 +404,6 @@ def salva_errore(qpic, img, picmap, labels, chosen_idx, motivo, urlid=None):
 # ================ MAIN ====================
 def main():
     global current_cookie_string
-    
-    log("=" * 50)
-    log("🚀 ALL-IN-ONE: Generatore + Autosurf")
-    log(f"📧 Account: {EASYHITS_EMAIL}")
-    log("=" * 50)
     
     # Carica dataset
     if not load_dataset_from_hf():
